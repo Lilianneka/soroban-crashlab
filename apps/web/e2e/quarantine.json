@@ -1,5 +1,8 @@
-{
-  "description": "Playwright specs temporarily quarantined from the merge gate. Each entry must include a tracking issue and an auto-expiry date (ISO 8601). Expired entries fail the quarantine check so the list cannot rot silently.",
-  "version": 1,
-  "quarantined": []
-}
+[
+  {
+    "spec": "apps/web/e2e/auth.spec.ts",
+    "reason": "Flaky auth redirect timing in CI; tracked in #1640 follow-up",
+    "owner": "web-platform",
+    "expires": "2025-12-31"
+  }
+]

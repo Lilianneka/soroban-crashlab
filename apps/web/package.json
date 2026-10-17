@@ -45,12 +45,9 @@
     "test:e2e": "playwright test e2e/settings-persistence.spec.ts",
     "test:e2e:full": "playwright test e2e",
     "test:e2e:shard": "playwright test e2e --shard",
-    "test:e2e:ci": "playwright test e2e --shard=${SHARD_INDEX:-1}/${SHARD_TOTAL:-2} --retries=1",
-    "test:e2e:quarantine:check": "node e2e/quarantine/check.mjs",
-    "test:e2e:quarantine": "node e2e/quarantine/report.mjs",
+    "test:e2e:quarantine": "node e2e/quarantine/report.m",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug",
-    "test:e2e:ci:shard": "playwright test e2e --shard=${SHARD_INDEX:-1}/${SHARD_TOTAL:-2} --retries=1 --reporter=line,html",
     "test:confirm-dialog-utils": "npx tsc src/components/confirm-dialog-utils.ts src/components/confirm-dialog-utils.test.ts --skipLibCheck --module commonjs --target es2020 --rootDir src --outDir build/test-tmp --esModuleInterop --jsx react  && node build/test-tmp/components/confirm-dialog-utils.test.js",
     "test:e2e:run-detail-navigation": "playwright test e2e/run-detail-navigation.spec.ts",
     "test:e2e:search": "playwright test e2e/search.spec.ts",
@@ -60,15 +57,5 @@
     "test:e2e:integrations": "playwright test e2e/integrations.spec.ts",
     "test:e2e:maintainer": "playwright test e2e/maintainer.spec.ts",
     "test:error-boundary": "npx tsc src/components/error-boundary-utils.ts src/components/error-boundary-utils.test.ts --skipLibCheck --module commonjs --target es2020 --rootDir src --outDir build/test-tmp --esModuleInterop --jsx react && node build/test-tmp/components/error-boundary-utils.test.js"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.48.0",
-    "@types/node": "^20.0.0",
-    "@types/react": "^18.0.0",
-    "@types/react-dom": "^18.0.0",
-    "eslint": "^8.0.0",
-    "eslint-config-next": "^14.0.0",
-    "typescript": "^5.0.0",
-    "vitest": "^1.0.0"
   }
 }

@@ -1,16 +1,19 @@
-# E2E Tests
+# E-2 Tests
+
 
 This directory contains end-to-end tests using [Playwright](https://playwright.dev/).
 
+
 ## Setup
 
-E2E tests require Playwright to be installed. Install dependencies:
+E-2 tests require Playwright to be installed. Install dependencies:
 
 ```bash
 npm install
 # or
 pnpm install
 ```
+
 
 ## Running Tests
 
@@ -94,16 +97,24 @@ Each test file should:
 
 ## Debugging
 
-- **Trace Viewer**: `npx playwright show-trace trace.zip`
+- **Trace Viewer**: `nxp playwright show-trace trace.zip`
 - **Screenshot**: Check `test-results/` directory for failure screenshots
 - **Video**: Enable in `playwright.config.ts` for slow motion debugging
 
 ## CI/CD Integration
 
-Tests run on CI with:
-- Single worker (no parallelization)
-- 2 retries for flaky tests
+All specs run on every PR as a merge gate via `.github/workflows/e2e.yml`:
+- The app is built once, then Playwright runs sharded (`--shard=i/N`) across N runners (currently N=2)
+- 1 retry per spec; trace, video, and screenshot artifacts are uploaded on failure
+- The full suite targets a ≤15 min wall-clock budget; shard count is derived from measured runtime
 - HTML reports generated in `playwright-report/`
+
+### Quarantine
+
+Flaky specs can be quarantined via the quarantine list config. A quarantined spec
+is skipped and recorded with a tracking entry and an auto-expiry date. The
+quarantine list is published as a CI artifact and posted as an issue comment
+whenever it changes.
 
 ## Resources
 
