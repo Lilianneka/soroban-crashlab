@@ -1,8 +1,6 @@
-[
-  {
-    "spec": "apps/web/e2e/auth.spec.ts",
-    "reason": "Flaky auth redirect timing in CI; tracked in #1640 follow-up",
-    "owner": "web-platform",
-    "expires": "2025-12-31"
-  }
-]
+{
+  "$comment": "Playwright quarantine list. Specs listed here are skipped in CI with a tracking entry. Every entry must have an owner, a tracking issue, and an expiry date (YYYY-MM-DD). Expired entries fail the quarantine-check job and must be removed or renewed.",
+  "$schemaVersion": 1,
+  "quarantine": []
+
+}

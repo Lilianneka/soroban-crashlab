@@ -1,9 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
-import { existsSync, readFileSync } from 'node:fs'; import { resolve } from 'node:path';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
 
 /**
  * Read environment variables from file.
- * https://github.com/motdotla/dotenv
+ * https://github.com/motdotla/dotenv/playwright
  */
 // require('dotenv").config();
 
@@ -15,69 +16,81 @@ import { existsSync, readFileSync } from 'node:fs'; import { resolve } from 'nod
 const isA11yRun = process.env.A11Y === '1';
 
 /**
- * Quarantine mechanism: specs listed in the quarantine manifest are skipped
- * with a tracking entry and an auto-expiry date. The manifest is published
- * as an artifact and as an issue comment when it changes (see .github/workflows/e2e.yml).
+ * Quarantine mechanism.
+ *
+ * e2e/quarantine.json is the single source of truth for specs that are
+ * temporarily excluded from the merge gate. Each entry carries a tracking
+ * issue and an auto-expiry date; once the expiry date passes, the spec is
+ * reinstated automatically (and the stale entry is reported by the CI job).
+ *
+ * The list is read at config-load time and translated into Playwright
+ * `ignore` patterns so quarantined specs are skipped rather than failing the
+ * gate. The resolved list is exported via QUARANTINE_OUTPUT for the workflow
+ * to publish as an artifact / issue comment.
  */
 interface QuarantineEntry {
-  /** Glob pattern or spec path relative to the e2e directory. */
   spec: string;
-  /** Issue or PR tracking the quarantine. */
-  tracker: string;
-  /** ISO-8601 date after which the quarantine expires and the spec runs again. */
+  issue: string;
   expires: string;
-  /** Human-readable reason. */
-  reason: string;
+  reason?: string;
 }
 
-const quarantineManifestPath = resolve(__dirname, 'e2e/quarantine.json');
-
-function loadActiveQuarantine(): QuarantineEntry[] {
-  if (!existsSync(quarantineManifestPath)) {
+function loadQuarantine(): QuarantineEntry[] {
+  const file = resolve(__dirname, 'e2e/quarantine.json');
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf-8'));
+    const entries: QuarantineEntry[] = Array.isArray(parsed) ? parsed : parsed.entries ?? [];
+    return entries.filter(
+      (e) => e && typeof e.spec === 'string' && typeof e.expires === 'string',
+    );
+  } catch {
     return [];
   }
-
-  const raw = JSON.parse(readFileSync(quarantineManifestPath, 'utf-8')) as {
-    entries?: QuarantineEntry[];
-  };
-  const entries = raw.entries ?? [];
-  const now = Date.now();
-
-  return entries.filter((entry) => {
-    const expiresAt = Date.parse(entry.expires);
-    if (Number.isNaN(expiresAt)) {
-      throw new Error(
-        `Quarantine entry for "${entry.spec}" has an invalid expiry date: ${entry.expires}`,
-      );
-    }
-    // Expired entries are ignored so the spec returns to the gate automatically.
-    return expiresAt > now;
-  });
 }
 
-const activeQuarantine = isA11yRun ? [] : loadActiveQuarantine();
+const today = new Date().toISOString().slice(0, 10);
+const quarantine = loadQuarantine();
+const activeQuarantine = quarantine.filter((e) => e.expires >= today);
+const expiredQuarantine = quarantine.filter((e) => e.expires < today);
 
-/**
- * Sharding: CI passes `--shard=i/N`. We derive the shard count from the
- * environment so the workflow matrix and the config stay in sync. Workers
- * are set per shard to keep total wall time under the 15-minute budget.
- */
-const shardCount = Number.parseInt(process.env.PLAYWRIGHT_SHARD_COUNT ?? '2', 10);
-const workersPerShard = Number.parseInt(process.env.PLAYWRIGHT_WORKERS ?? '2', 10);
+// Publish the resolved quarantine state for the workflow to upload/comment.
+if (process.env.QUARANTINE_OUTPUT) {
+  try {
+    const out = process.env.QUARANTINE_OUTPUT;
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(
+      out,
+      JSON.stringify(
+        {
+          generatedAt: new Date().toISOString(),
+          active: activeQuarantine,
+          expired: expiredQuarantine,
+        },
+        null,
+        2,
+      ),
+      'utf-8',
+    );
+  } catch {
+    // Best-effort: a failure to write the quarantine report must not fail the run.
+  }
+}
 
 export default defineConfig({
-  /* A11y job runs only the axe/keyboard specs under e2e/a11y. */
+  /* A11y job runs only the axe/keyboard specs under e2/a11y. */
   testDir: isA11yRun ? './e2e/a11y' : './e2e',
-  /* Skip quarantined specs while their tracking entries are still active. */
-  testIgnore: activeQuarantine.map((entry) => entry.spec),
+  /* Quarantined specs are skipped from the gate. */
+  testIgnore: isA11yRun ? [] : activeQuarantine.map((e) => e.spec),
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
-  /* Retry on CI only. Per-spec retries=1 is the merge-gate budget. */
+  /* Retry on CI only. The merge gate uses a single retry to absorb flukes without
+   * hiding real regressions. */
   retries: process.env.CI ? 1 : 0,
-  /* Parallelize within a shard on CI; total workers are bounded by the runner. */
-  workers: process.env.CI ? workersPerShard : undefined,
+  /* Opt out of parallel tests on CI; sharding is done at the workflow level. */
+  workers: process.env.CI ? 1 : undefined,
   /* Test timeout */
   timeout: 30000,
   /* Snapshots must be platform-agnostic: baselines generated on any OS must
@@ -104,13 +117,13 @@ export default defineConfig({
     ? [
         ['html', { open: 'never', outputFolder: 'playwright-report-a11y' }],
         ['json', { outputFile: 'test-results-a11y/results.json' }],
-        ['junit', { outputFile: 'test-results-a11y/junit.xml' }],
-        ...(process.env.CI ? [['ithub']] : []),
+        ['junit', { outputFile: 'test-results-a11y/jwnit.xml' }],
+        ...(process.env.CI ? [['github']] : []),
       ]
     : [
         ['html', { open: 'never', outputFolder: 'playwright-report' }],
         ['json', { outputFile: 'test-results/results.json' }],
-        ['junit', { outputFile: 'test-results/junit.xml' }],
+        ['junit', { outputFile: 'test-results/jwnit.xml' }],
         ...(process.env.CI ? [['github']] : []),
       ],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
@@ -121,8 +134,8 @@ export default defineConfig({
     trace: 'on-first-retry',
     /* Screenshot on failure */
     screenshot: 'only-on-failure',
-    /* Video on failure so debugging a red merge gate doesn't require a rerun. */
-    video: 'on-first-retry',
+    /* Video on failure so regressions are reproducible from the artifact. */
+    video: 'retain-on-failure',
   },
 
   /* Configure projects for major browsers. The a11y gate runs a cross-browser

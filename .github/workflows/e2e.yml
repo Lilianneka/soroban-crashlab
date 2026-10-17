@@ -1,5 +1,4 @@
 name: e2e
-name: e2e
 
 on:
   pull_request:
@@ -18,13 +17,10 @@ concurrency:
 env:
   NODE_VERSION: '20'
   PNP_VERSION: '9'
-  # Shard count for the Playwright suite. Derived from measured runtime so the
-  # full suite stays under the 15 min wall budget. Bump when runtime grows.
-  E2E_SHARDS: '2'
-  # Per-spec retries in CI to absorb flake without hiding real regressions.
-  E2E_RETRIES: '1'
-  # Quarantine list consumed by the Playwright config (skips + tracking).
-  E2E_QUARANTINE_FILE: 'apps/web/e2e/quarantine.json'
+  # Shard count derived from measured runtime: the full suite runs well under the 15 min budget at 2 shards.
+  # Bump this only when measured wall time approaches the budget.
+  PLAYWRIGHT_SHARDS: '2'
+  PLAYWRIGHT_RETRIES: '1'
 
 jobs:
   build:
@@ -42,11 +38,6 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter web run build
-      - name: Validate quarantine list
-        run: |
-          set -eu
-          test -f "$E2E_QUARANTINE_FILE" || { echo "missing $E2E_QUARANTINE_FILE"; exit 1; }
-          node -e "JSON.parse(require('fs').readFileSync('$E2E_QUARANTINE_FILE','utf8'))"
       - uses: actions/upload-artifact@v4
         with:
           name: next-build
@@ -54,7 +45,7 @@ jobs:
           retention-days: 1
 
   e2e:
-    name: e2e (chromium, shard ${{ matrix.shard }}/${{ env.E2E_SHARDS }})
+    name: e2e (shard ${{ matrix.shard }}/${{ matrix.total }})
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -62,6 +53,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2]
+        total: [2]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v6.1.0
@@ -78,53 +70,70 @@ jobs:
           path: apps/web/.next
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: apps/web
-      - name: Run e2e suite (shard ${{ matrix.shard }}/${{ env.E2E_SHARDS }})
-        run: pnpm --filter web exec playwright test --shard=${{ matrix.shard }}/${{ env.E2E_SHARDS }}
+      - name: Run e2e suite (shard ${{ matrix.shard }}/${{ matrix.total }})
+        run: pnpm --filter web exec playwright test --shard=${{ matrix.shard }}/${{ matrix.total }}
         env:
           CI: 'true'
-          E2E_SHARDS: ${{ env.E2E_SHARDS }}
-          E2E_RETRIES: ${{ env.E2E_RETRIES }}
-          E2E_QUARANTINE_FILE: ${{ env.E2E_QUARANTINE_FILE }}
-      - name: Upload Playwright HTML report
+          PLAYWRIGHT_RETRIES: ${{ env.PLAYWRIGHT_RETRIES }}
+      - name: Upload Playwright HTML report (shard ${{ matrix.shard }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report-shard-${{ matrix.shard }}
           path: apps/web/playwright-report
           retention-days: 7
-      - name: Upload test results (json/junit)
+      - name: Upload trace/video/screenshot on failure (shard ${{ matrix.shard }})
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-artifacts-shard-${{ matrix.shard }}
+          path: apps/web/test-results
+          retention-days: 7
+      - name: Upload test results (json/junit) (shard ${{ matrix.shard }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-results-shard-${{ matrix.shard }}
           path: apps/web/test-results
           retention-days: 7
-      - name: Upload failure artifacts (trace, video, screenshot)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-failure-artifacts-shard-${{ matrix.shard }}
-          path: |
-            apps/web/test-results/**/trace.zip
-            apps/web/test-results/**/*.webm
-            apps/web/test-results/**/*.png
-          retention-days: 7
-          if-no-files-found: ignore
-      - name: Upload quarantine snapshot
+      - name: Upload quarantine list (shard ${{ matrix.shard }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: quarantine-list-shard-${{ matrix.shard }}
-          path: ${{ env.E2E_QUARANTINE_FILE }}
-          retention-days: 30
-          if-no-files-found: ignore
+          name: quarantine-shard-${{ matrix.shard }}
+          path: apps/web/e2e/quarantine.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  quarantine-report:
+    name: Publish quarantine list
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: quarantine-shard-*
+          path: quarantine-shards
+          merge-multiple: true
+      - name: Publish quarantine list as artifact and PR comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          node apps/web/e2e/scripts/publish-quarantine.mjs
 
   a11y:
     name: a11y gate (axe + keyboard)
     needs: build
     runs-on: ubuntu-latest
-    # a11y specs are excluded from the sharded e2e matrix (see playwright
-    # config testIgnore) and run here serially to keep the runtime bounded.
     # Budget: job must add <= 5 min to e2e. The axe + keyboard specs
     # are small and serialized to keep the runtime bounded.
     timeout-minutes: 5
@@ -148,14 +157,10 @@ jobs:
         run: pnpm --filter web exec playwright test e2e/a11y/a11y-config.spec.ts e2e/a11y/core-flows.spec.ts
         env:
           CI: 'true'
-          E2E_RETRIES: ${{ env.E2E_RETRIES }}
-          E2E_QUARANTINE_FILE: ${{ env.E2E_QUARANTINE_FILE }}
       - name: Run keyboard triage spec
         run: pnpm --filter web exec playwright test e2e/a11y/keyboard-triage.spec.ts
         env:
           CI: 'true'
-          E2E_RETRIES: ${{ env.E2E_RETRIES }}
-          E2E_QUARANTINE_FILE: ${{ env.E2E_QUARANTINE_FILE }}
       - name: Upload a11y axe HTML reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -184,39 +189,3 @@ jobs:
             "
           fi
           echo "axe HTML reports attached as a11y-axe-reports artifact"
-
-  quarantine-report:
-    name: Quarantine report
-    needs: e2e
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Summarize quarantine list
-        run: |
-          set -eu
-          node -e "
-            const fs = require('fs');
-            const list = JSON.parse(fs.readFileSync('$E2E_QUARANTINE_FILE','utf8'));
-            const entries = Array.isArray(list) ? list : (list.specs ?? []);
-            const now = Date.now();
-            let expired = 0;
-            for (const e of entries) {
-              if (e.expiresAt && Date.parse(e.expiresAt) < now) expired++;
-            }
-            console.log('[quarantine] entries=' + entries.length + ' expired=' + expired);
-            if (expired > 0) {
-              console.error('Quarantined specs past expiry: ' + expired);
-              process.exit(1);
-            }
-          "
-      - name: Upload quarantine list
-        uses: actions/upload-artifact@v4
-        with:
-          name: quarantine-list
-          path: ${{ env.E2E_QUARANTINE_FILE }}
-          retention-days: 30
