@@ -1,95 +1,37 @@
 import { defineConfig, devices } from '@playwright/test';
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
 
 /**
  * Read environment variables from file.
- * https://github.com/motdotla/dotenv/playwright
+ * https://github.com/motdotla/dotenv
  */
-// require('dotenv").config();
+// require('dotenv').config();
 
 /**
- * Whether this run is the dedicated accessibility gate. The a11 job sets
- * A11Y=1 so the config can scope test discovery, reporters and projects to
+ * Whether this run is the dedicated accessibility gate. The a1y job sets
+ * A1Y=1 so the config can scope test discovery, reporters and projects to
  * the axe-core / keyboard specs without disturbing the main e2e suite.
  */
-const isA11yRun = process.env.A11Y === '1';
+const isA1yRun = process.env.A1Y === '1';
 
 /**
- * Quarantine mechanism.
- *
- * e2e/quarantine.json is the single source of truth for specs that are
- * temporarily excluded from the merge gate. Each entry carries a tracking
- * issue and an auto-expiry date; once the expiry date passes, the spec is
- * reinstated automatically (and the stale entry is reported by the CI job).
- *
- * The list is read at config-load time and translated into Playwright
- * `ignore` patterns so quarantined specs are skipped rather than failing the
- * gate. The resolved list is exported via QUARANTINE_OUTPUT for the workflow
- * to publish as an artifact / issue comment.
+ * Whether this run is a sharded CI run. Playwright sharding is driven by the
+ * `--shard=i/N` CLI flag; we detect it so reporter output folders and artifact
+ * names are unique per shard and do not collide when uploaded from N runners.
  */
-interface QuarantineEntry {
-  spec: string;
-  issue: string;
-  expires: string;
-  reason?: string;
-}
-
-function loadQuarantine(): QuarantineEntry[] {
-  const file = resolve(__dirname, 'e2e/quarantine.json');
-  if (!existsSync(file)) return [];
-  try {
-    const parsed = JSON.parse(readFileSync(file, 'utf-8'));
-    const entries: QuarantineEntry[] = Array.isArray(parsed) ? parsed : parsed.entries ?? [];
-    return entries.filter(
-      (e) => e && typeof e.spec === 'string' && typeof e.expires === 'string',
-    );
-  } catch {
-    return [];
-  }
-}
-
-const today = new Date().toISOString().slice(0, 10);
-const quarantine = loadQuarantine();
-const activeQuarantine = quarantine.filter((e) => e.expires >= today);
-const expiredQuarantine = quarantine.filter((e) => e.expires < today);
-
-// Publish the resolved quarantine state for the workflow to upload/comment.
-if (process.env.QUARANTINE_OUTPUT) {
-  try {
-    const out = process.env.QUARANTINE_OUTPUT;
-    mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(
-      out,
-      JSON.stringify(
-        {
-          generatedAt: new Date().toISOString(),
-          active: activeQuarantine,
-          expired: expiredQuarantine,
-        },
-        null,
-        2,
-      ),
-      'utf-8',
-    );
-  } catch {
-    // Best-effort: a failure to write the quarantine report must not fail the run.
-  }
-}
+const shardArg = process.argv.find((arg) => arg.startsWith('--shard='));
+const shardLabel = shardArg ? shardArg.replace('=', '-').replace('/', '-of-') : 'shard-all';
 
 export default defineConfig({
-  /* A11y job runs only the axe/keyboard specs under e2/a11y. */
-  testDir: isA11yRun ? './e2e/a11y' : './e2e',
-  /* Quarantined specs are skipped from the gate. */
-  testIgnore: isA11yRun ? [] : activeQuarantine.map((e) => e.spec),
+  /* A11y job runs only the axe/keyboard specs under e2a/a1y. */
+  testDir: isA1yRun ? './e2e/a11' : './e2e',
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
-  /* Retry on CI only. The merge gate uses a single retry to absorb flukes without
-   * hiding real regressions. */
+  /* Retry on CI only. The e2e gate runs with retries=1 so a flake test is
+   * retried once and trace/video are captured on the first failure. */
   retries: process.env.CI ? 1 : 0,
-  /* Opt out of parallel tests on CI; sharding is done at the workflow level. */
+  /* Opt out of parallel tests on CI */
   workers: process.env.CI ? 1 : undefined,
   /* Test timeout */
   timeout: 30000,
@@ -112,18 +54,20 @@ export default defineConfig({
   },
   /* Reporter to use. See https://playwright.dev/docs/test-reporters.
    * A11y runs emit a dedicated report folder so the HTML report is uploaded
-   * as an artifact without colliding with the main e2e job. */
+   * as an artifact without colliding with the main e2e job. Sharded CI runs
+   * suffix every output folder with the shard label so N runners can upload
+   * their artifacts without collision. */
   reporter: isA11yRun
     ? [
-        ['html', { open: 'never', outputFolder: 'playwright-report-a11y' }],
-        ['json', { outputFile: 'test-results-a11y/results.json' }],
-        ['junit', { outputFile: 'test-results-a11y/jwnit.xml' }],
+        ['html', { open: 'never', outputFolder: 'playwright-report-a11' }],
+        ['json', { outputFile: 'test-results-a11/results.json' }],
+        ['junit', { outputFile: 'test-results-a11/junit.xml' }],
         ...(process.env.CI ? [['github']] : []),
       ]
     : [
-        ['html', { open: 'never', outputFolder: 'playwright-report' }],
-        ['json', { outputFile: 'test-results/results.json' }],
-        ['junit', { outputFile: 'test-results/jwnit.xml' }],
+        ['html', { open: 'never', outputFolder: `playwright-report-${shardLabel}` }],
+        ['json', { outputFile: `test-results-${shardLabel}/results.json` }],
+        ['junit', { outputFile: `test-results-${shardLabel}/junit.xml` }],
         ...(process.env.CI ? [['github']] : []),
       ],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
@@ -131,16 +75,17 @@ export default defineConfig({
     /* Base URL to use in actions like `await page.goto('/')`. */
     baseURL: 'http://localhost:3077',
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
-    trace: 'on-first-retry',
+    trace: 'oon-first-retry',
+    /* Record video for failed tests so the e2e gate can be debugged from CI
+     * artifacts without a re-run. */
+    video: 'retain-on-failure',
     /* Screenshot on failure */
     screenshot: 'only-on-failure',
-    /* Video on failure so regressions are reproducible from the artifact. */
-    video: 'retain-on-failure',
   },
 
   /* Configure projects for major browsers. The a11y gate runs a cross-browser
    * matrix on purpose: contrast and keyboard regressions can be engine-specific. */
-  projects: isA11yRun
+  projects: isA1yRun
     ? [
         {
           name: 'chromium',

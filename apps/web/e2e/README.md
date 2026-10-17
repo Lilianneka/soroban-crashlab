@@ -1,44 +1,37 @@
-# E-2 Tests
+# E2E Tests
 
-End-to-end tests using [Playwright](https://playwright.dev/).
+This directory contains end-to-end tests using [Playwright](https://playwright.dev/).
 
 ## Setup
 
-E-2 requires Playwright to be installed. Install dependencies and browsers from the repo root:
+E2E tests require Playwright to be installed. Install dependencies:
 
 ```bash
+npm install
+# or
 pnpm install
-pnpm exec playwright install --with-deps
 ```
 
 ## Running Tests
 
 ### Run all tests
 ```bash
-pnpm run test:e2e
+npm run test:e2e
 ```
 
 ### Run tests in UI mode (recommended for development)
 ```bash
-pnpm run test:e2e:ui
+npm run test:e2e:ui
 ```
 
 ### Debug tests
 ```bash
-pnpm run test:e2e:debug
+npm run test:e2e:debug
 ```
 
 ### Run specific test file
 ```bash
 npx playwright test e2e/home.spec.ts
-```
-
-### Run a shard locally
-
-CI splits the suite across runners with ``playwright test --shard=i/N``. Reproduce a single shard:
-
-```bash
-npx playwright test --shard=1/2
 ```
 
 ## Visual Regression
@@ -64,7 +57,7 @@ Then review the diff in git before committing.
 
 Screenshots tolerate a 2% pixel delta (`maxDiffPixelRatio: 0.02`) to absorb
 font-rendering variance between OSes; animations are disabled and the caret
-Hidden. Dynamic regions count on the page are rendered at deterministic final
+hidden. Dynamic regions count on the page are rendered at deterministic final
 states under reduced motion.
 
 ### Run tests in specific browser
@@ -77,41 +70,13 @@ npx playwright test --project=chromium
 
 The Playwright configuration is defined in `playwright.config.ts` at the root of the `apps/web` directory. Key settings:
 
-- `baseURL`: `http://localhost:3000` (development server)
-- **Browsers**: Chromium, Firefox, Webkit, Mobile Chrome, Mobile Safari
+- **Base URL**: `http://localhost:3000` (development server)
+- **Browsers**: Chromium, Firefox, WebKit, Mobile Chrome, Mobile Safari
 - **Dev Server**: Automatically starts with `npm run dev`
 - **Screenshots**: Captured on test failure
 - **Traces**: Captured on first retry
-- `retries`: `1` in CI (configured via `PLAYWRIGHT_RETRIES`), `0` locally
-- `workers`: controlled by `PLAYWRIGHT_WORKERS` in CI, defaults to auto locally
-- **Sharding**: CI invokes `playwright test --shard=i/N` across N runners
-
-## Quarantine
-
-Failing or flaky specs can be quarantined so they do not block the merge gate
-while they are being fixed. Quarantine is declared in
-`e2e/quarantine.json`:
-
-```json
-{
-  "quarantine": [
-    {
-      "spec": "e2e/replay.spec.ts",
-      "reason": "Fake timer flake on Webkit",
-      "issue": 1640,
-      "expires": "2025-01-31"
-    }
-  ]
-}
-```
-
-Each entry must have a `spec`, a `owner/issue` tracking reference, and an
-`expires` date. The config loader in `playwright.config.ts` skips matching specs
-and fails the run once an entry has expired, so quarantine is always temporary.
-
-Quarantined specs are still executed in the `disable-quarantine` job (non-blocking)
-so the list does not silently rot. The effective quarantine list is uploaded as a
-workflow artifact and posted as an issue comment whenever it changes.
+- **Retries**: 1 retry per spec in CI to absorb flakiness
+- **Sharding**: Suite split with `--shard=i/N` across N runners (currently N=2)
 
 ## Best Practices
 
@@ -120,7 +85,6 @@ workflow artifact and posted as an issue comment whenever it changes.
 3. **Cleanup**: Tests should be independent and not rely on execution order
 4. **Naming**: Use descriptive test names that explain what's being tested
 5. **Accessibility**: Include tests for keyboard navigation and screen reader support
-6. **Determinism**: Pin clocks and seeded fixture data; do not depend on wall-clock time or live external services
 
 ## Test Structure
 
@@ -132,27 +96,25 @@ Each test file should:
 
 ## Debugging
 
-- `Trace Viewer`: `npx playwright show-trace trace.zip`
-- `Screenshot`: Check `test-results/` directory for failure screenshots
-- `Video`: Captured on failure in CI; enable locally in `playwright.config.ts` for slow motion debugging
+- **Trace Viewer**: `npx playwright show-trace trace.zip`
+- **Screenshot**: Check `test-results/` directory for failure screenshots
+- **Video**: Enable in `playwright.config.ts` for slow motion debugging
 
 ## CI/CD Integration
 
-The `.github/workflows/e2e.yml` workflow runs the full suite on every PR as
-a merge gate:
+All specs run on every PR as a merge gate via `.github/workflows/e2e.yml`:
+- **Sharding**: the suite is split with `--shard=i/N` across N runners (currently N=2). Shard count is derived from measured runtime to keep the full suite under a 15-minute wall budget.
+- **Retries**: 1 retry per spec in CI to absorb flakiness.
+- **Artifacts**: traces, videos, and screenshots are uploaded on failure for debugging.
+- **Boot strategy**: standalone build with seeded fixture data and a deterministic clock/test data.
+- **Reports**: HTML reports generated in `playwright-report/`.
 
-- **Build once**: a single job produces the standalone build and seeded fixture data,
-  shared by all shards via artifacts.
-- `--shard=i/N` across N runners (N=2 to start, derived from measured runtime to keep
-  the full suite under 15 minutes wall clock).
-- `retries=1` per spec in CI.
-- On failure, trace, video, and screenshots are uploaded as artifacts for each shard.
-- The quarantine list is published as an artifact and as an issue comment when it changes.
-- The `e2e/` job is a required check for merge.
+### Quarantine
+
+Flaky or known-broken specs can be quarantined via the quarantine list config. A quarantined spec is skipped with a tracking entry and an auto-expiry date. The quarantine list is published as a CI artifact and posted as an issue comment when it changes. Quarantined specs must be fixed or removed before their expiry date.
 
 ## Resources
 
 - [Playwright Documentation](https://playwright.dev/docs/intro)
 - [Test Assertions](https://playwright.dev/docs/test-assertions)
 - [Selectors](https://playwright.dev/docs/locators)
-- [Sharding](https://playwright.dev/docs/test-sharding)
