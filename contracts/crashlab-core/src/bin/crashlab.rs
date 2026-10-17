@@ -21,7 +21,7 @@ use crashlab_core::{
     save_run_checkpoint_json,
     HealthSnapshot, HealthStatus, RetentionPolicy, RetentionRecord, LocalArtifactStore,
     ArtifactStore, RunCheckpoint, CaseBundleDocument, FixtureManifest, ProvenancePolicy,
-    load_case_bundle_document_json,
+    load_case_bundle_document_json, import_corpus_json, verify_corpus_integrity,
 };
 use crashlab_core::worker_partition::RingCoverage;
 use std::collections::HashSet;
@@ -215,6 +215,13 @@ fn main() {
         {
             fixture_show_command(path, flag == Some("--json"), &rest);
         }
+        (Some("corpus"), Some("verify"), Some(path), None) => {
+            if !rest.is_empty() {
+                print_usage();
+                std::process::exit(1);
+            }
+            corpus_verify_command(path);
+        }
         _ => {
             print_usage();
             std::process::exit(1);
@@ -230,6 +237,7 @@ fn print_usage() {
                 crashlab runs status <id> [--json]\n\
                 crashlab replay seed <bundle-json-path>\n\
                 crashlab regression-suite <suite-json-path-or-directory> [--report <report.json>]\n\
+                crashlab corpus verify <corpus-json-path>\n\
                 crashlab fixture verify <manifest-or-bundle-json> [--policy <require|warn|off>]\n\
                 crashlab fixture show <manifest-or-bundle-json> [--json]\n\
                 crashlab retention sweep [--dry-run] [--heartbeat-ttl <secs>] [--grace-period <secs>]\n\
@@ -399,6 +407,47 @@ fn fixture_show_command(path: &str, json: bool, rest: &[String]) {
                 }
                 None => println!("original-only document (no shrink lineage)"),
             }
+        }
+    }
+}
+
+/// Verify corpus integrity: scan seeds and report corrupt/missing entries (#1802).
+fn corpus_verify_command(path: &str) {
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("failed to read corpus file: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match serde_json::from_slice::<crashlab_core::CorpusArchive>(&bytes) {
+        Ok(archive) => {
+            let issues = verify_corpus_integrity(&archive);
+            if issues.is_empty() {
+                println!("corpus verified: {} seeds, all valid", archive.seeds.len());
+            } else {
+                eprintln!("corpus integrity check failed: {} issue(s)", issues.len());
+                for issue in &issues {
+                    match issue {
+                        crashlab_core::CorpusVerifyStatus::Corrupt { seed_id, reason } => {
+                            eprintln!("  corrupt seed {}: {}", seed_id, reason);
+                        }
+                        crashlab_core::CorpusVerifyStatus::Missing { seed_id } => {
+                            eprintln!("  missing seed {}", seed_id);
+                        }
+                        crashlab_core::CorpusVerifyStatus::Orphaned { seed_id } => {
+                            eprintln!("  orphaned seed {}", seed_id);
+                        }
+                        _ => {}
+                    }
+                }
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("failed to parse corpus: {e}");
+            std::process::exit(1);
         }
     }
 }
