@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { isQuarantined } from './quarantine';
 
 const ONBOARDING_WIZARD_COMPLETE_KEY = 'crashlab:onboarding-wizard-complete:v1';
 const TOUR_DISMISSED_KEY = 'crashlab:product-tour-dismissed:v1';
@@ -10,13 +11,15 @@ const TOUR_DISMISSED_KEY = 'crashlab:product-tour-dismissed:v1';
  */
 export const test = base.extend({
   page: async ({ page }, runWithPage) => {
-    await page.addInitScript(
-      ([wizardKey, tourKey]) => {
-        localStorage.setItem(wizardKey, 'true');
-        localStorage.setItem(tourKey, 'true');
-      },
-      [ONBOARDING_WIZARD_COMPLETE_KEY, TOUR_DISMISSED_KEY] as const,
-    );
+    const specPath = test.info().file;
+    const quarantine = isQuarantined(specPath);
+    if (quarantine) {
+      test.skip(true, `Quarantined until ${quarantine.expires}: ${quarantine.reason}`);
+    }
+    await page.addInitScript(([wizardKey, tourKey]) => {
+      localStorage.setItem(wizardKey, 'true');
+      localStorage.setItem(tourKey, 'true');
+    }, [ONBOARDING_WIZARD_COMPLETE_KEY, TOUR_DISMISSED_KEY] as const);
     await runWithPage(page);
   },
 });
