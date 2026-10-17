@@ -45,6 +45,13 @@ const FNV_PRIME: u64 = 1099511628211;
 /// makes it unlikely to appear in category labels or field values.
 const FIELD_SEP: u8 = 0x1E;
 
+/// Current signature schema version.
+///
+/// Bumping this value changes every computed signature and therefore requires
+/// a migration report (W5-F08 diff) plus maintainer sign-off. See
+/// `docs/taxonomy.md` for the minor/major change rules.
+pub const SIGNATURE_SCHEMA_VERSION: u32 = 1;
+
 /// Accumulates a category stack and key fields, then derives a stable hash.
 ///
 /// Call [`push_category`](Self::push_category) for each level of the failure
@@ -54,18 +61,28 @@ const FIELD_SEP: u8 = 0x1E;
 ///
 /// The hasher is designed for determinism: key fields are sorted by key name
 /// before hashing so insertion order does not affect the result.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SignatureHasher {
     /// Ordered sequence of failure category labels (outermost → innermost).
     category_stack: Vec<String>,
     /// Sorted key–value fields that further discriminate the failure.
     fields: BTreeMap<String, String>,
+    /// Schema version embedded into the hash preimage.
+    schema_version: u32,
 }
 
 impl SignatureHasher {
     /// Creates an empty hasher.
     pub fn new() -> Self {
-        Self::default()
+        Self { category_stack: Vec::new(), fields: BTreeMap::new(), schema_version: SIGNATURE_SCHEMA_VERSION }
+    }
+
+    /// Creates a hasher pinned to an explicit schema version.
+    ///
+    /// Used by migration tooling to recompute historical signatures under a
+    /// different schema version.
+    pub fn with_schema_version(version: u32) -> Self {
+        Self { category_stack: Vec::new(), fields: BTreeMap::new(), schema_version: version }
     }
 
     /// Appends `category` to the category stack.
@@ -101,6 +118,12 @@ impl SignatureHasher {
     /// times and will always return the same value.
     pub fn finish(&self) -> u64 {
         let mut hash = FNV_OFFSET;
+
+        // Hash the schema version first so any bump re-buckets all signatures.
+        for byte in self.schema_version.to_le_bytes() {
+            hash = fnv1a_byte(hash, byte);
+        }
+        hash = fnv1a_byte(hash, FIELD_SEP);
 
         // Hash the category stack (order-sensitive).
         for (i, cat) in self.category_stack.iter().enumerate() {
@@ -160,6 +183,22 @@ pub fn hash_category_payload(category: &str, payload: &[u8]) -> u64 {
     hasher.push_category(category);
     hasher.add_field("__payload__", &hex::encode(payload));
     hasher.finish()
+}
+
+/// Error returned when a stored signature's schema version does not match the
+/// current [`SIGNATURE_SCHEMA_VERSION`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaVersionMismatch {
+    /// Version recorded alongside the stored signature.
+    pub found: u32,
+    /// Version this build computes.
+    pub expected: u32,
+}
+
+impl std::fmt::Display for SchemaVersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "signature schema version mismatch: found {}, expected {}; run the migration tool to recompute baselines under the new schema (see docs/taxonomy.md)", self.found, self.expected)
+    }
 }
 
 #[cfg(test)]
@@ -325,5 +364,28 @@ mod tests {
         let h1 = hash_category_payload("runtime-failure", b"payload1");
         let h2 = hash_category_payload("runtime-failure", b"payload2");
         assert_ne!(h1, h2);
+    }
+
+    // ── Schema versioning ─────────────────────────────────────────────────────
+
+    #[test]
+    fn default_hasher_uses_current_schema_version() {
+        let h = SignatureHasher::new();
+        assert_eq!(h.schema_version, SIGNATURE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn schema_version_changes_hash() {
+        let mut h1 = SignatureHasher::with_schema_version(1);
+        h1.push_category("auth");
+        let mut h2 = SignatureHasher::with_schema_version(2);
+        h2.push_category("auth");
+        assert_ne!(h1.finish(), h2.finish());
+    }
+
+    #[test]
+    fn schema_version_mismatch_has_migration_hint() {
+        let err = SchemaVersionMismatch { found: 1, expected: 2 };
+        assert!(err.to_string().contains("migration"));
     }
 }
