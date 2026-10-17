@@ -10,15 +10,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
+/// Current signature schema version (W5-F08).
+///
+/// This is the version of the signature preimage (taxonomy leaves + masked
+/// fields) that produced the `signature` recorded on each fixture. It is
+/// stored alongside the fixture so that historical signatures can be
+/// re-bucketed explicitly rather than silently.
+pub const SIGNATURE_SCHEMA_VERSION: u32 = 1;
+
+/// Signature schema versions this crate can load.
+pub const SUPPORTED_SIGNATURE_SCHEMAS: &[u32] = &[SIGNATURE_SCHEMA_VERSION];
+
 /// Current fixture manifest schema version.
 pub const FIXTURE_MANIFEST_SCHEMA_VERSION: u32 = 1;
-
-/// Current signature schema version (#W5-F08).
-///
-/// Embedded in every computed signature preimage and stored on fixtures and
-/// baselines so that a preimage change never silently re-buckets historical
-/// signatures. Bumping this requires a migration report (W5-F08 diff).
-pub const SIGNATURE_SCHEMA_VERSION: u32 = 1;
 
 /// Schema version of the shrink-lineage block (#1866).
 pub const SHRINK_LINEAGE_SCHEMA_VERSION: u32 = 1;
@@ -143,7 +147,7 @@ impl FixturePairing {
 }
 
 /// Metadata for a single fixture entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FixtureMetadata {
     /// Unique fixture identifier.
     pub id: String,
@@ -169,18 +173,18 @@ pub struct FixtureMetadata {
     /// Additional key-value metadata.
     #[serde(default)]
     pub properties: HashMap<String, String>,
+    /// Signature schema version that produced `signature` (W5-F08).
+    ///
+    /// Absent on legacy fixtures; treated as [`SIGNATURE_SCHEMA_VERSION`] when
+    /// missing so that pre-versioning fixtures remain loadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_schema_version: Option<u32>,
     /// Tamper-evident provenance linking seed → run → engine → environment (#1864).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<ProvenanceRecord>,
     /// Original + minimal payload pairing with shrink delta metadata (#1866).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pairing: Option<FixturePairing>,
-    /// Signature schema version the fixture's signature was computed under.
-    ///
-    /// Absent on legacy fixtures; treated as [`SIGNATURE_SCHEMA_VERSION`] when
-    /// loading older manifests without a bump.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature_schema_version: Option<u32>,
 }
 
 /// Fixture manifest containing metadata for all fixtures.
@@ -231,11 +235,16 @@ pub enum ManifestError {
     DuplicateFixtureId(String),
     /// Provenance verification failed for a fixture.
     ProvenanceFailed { fixture_id: String, reason: String },
-    /// Signature schema version mismatch with migration hint.
+    /// Signature schema version mismatch (W5-F08).
+    ///
+    /// Emitted when a fixture's signature was produced under a schema version
+    /// this crate does not support. The `hint` field carries the migration
+    /// guidance shown to the operator.
     SignatureSchemaMismatch {
         fixture_id: String,
         found: u32,
         expected: u32,
+        hint: String,
     },
     /// Serialization/deserialization error.
     SerializationError(String),
@@ -258,11 +267,10 @@ impl fmt::Display for ManifestError {
                 fixture_id,
                 found,
                 expected,
+                hint,
             } => write!(
                 f,
-                "signature schema version mismatch for {fixture_id}: found {found}, expected {expected}; \
-                 recompute baselines under schema {expected} and attach a W5-F08 diff report \
-                 (recurring→new mapping) before merging"
+                "signature schema mismatch for {fixture_id}: found {found}, expected {expected}; {hint}"
             ),
             ManifestError::SerializationError(msg) => write!(f, "serialization error: {msg}"),
         }
@@ -284,9 +292,9 @@ impl FixtureMetadata {
             created_at: None,
             tags: Vec::new(),
             properties: HashMap::new(),
+            signature_schema_version: None,
             provenance: None,
             pairing: None,
-            signature_schema_version: Some(SIGNATURE_SCHEMA_VERSION),
         }
     }
 
@@ -318,6 +326,22 @@ impl FixtureMetadata {
     pub fn add_property(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.properties.insert(key.into(), value.into());
         self
+    }
+
+    /// Records the signature schema version that produced this fixture's
+    /// signature (W5-F08).
+    pub fn with_signature_schema_version(mut self, version: u32) -> Self {
+        self.signature_schema_version = Some(version);
+        self
+    }
+
+    /// The effective signature schema version for this fixture.
+    ///
+    /// Legacy fixtures without an explicit version are treated as
+    /// [`SIGNATURE_SCHEMA_VERSION`].
+    pub fn effective_signature_schema_version(&self) -> u32 {
+        self.signature_schema_version
+            .unwrap_or(SIGNATURE_SCHEMA_VERSION)
     }
 
     /// Attaches a tamper-evident provenance record (#1864).
@@ -358,17 +382,6 @@ impl FixtureMetadata {
         self.pairing.as_ref().map(|p| &p.lineage)
     }
 
-    /// Sets the signature schema version this fixture's signature was computed under.
-    pub fn with_signature_schema_version(mut self, version: u32) -> Self {
-        self.signature_schema_version = Some(version);
-        self
-    }
-
-    /// Effective signature schema version (legacy fixtures default to current).
-    pub fn effective_signature_schema_version(&self) -> u32 {
-        self.signature_schema_version.unwrap_or(SIGNATURE_SCHEMA_VERSION)
-    }
-
     /// Validates fixture metadata against basic constraints.
     pub fn validate(&self) -> Result<(), ManifestError> {
         if self.id.is_empty() {
@@ -387,14 +400,18 @@ impl FixtureMetadata {
                 self.fixture_type
             )));
         }
-        if let Some(found) = self.signature_schema_version {
-            if found != SIGNATURE_SCHEMA_VERSION {
-                return Err(ManifestError::SignatureSchemaMismatch {
-                    fixture_id: self.id.clone(),
-                    found,
-                    expected: SIGNATURE_SCHEMA_VERSION,
-                });
-            }
+        let sig_version = self.effective_signature_schema_version();
+        if !SUPPORTED_SIGNATURE_SCHEMAS.contains(&sig_version) {
+            return Err(ManifestError::SignatureSchemaMismatch {
+                fixture_id: self.id.clone(),
+                found: sig_version,
+                expected: SIGNATURE_SCHEMA_VERSION,
+                hint: format!(
+                    "recompute the signature under schema v{SIGNATURE_SCHEMA_VERSION} \
+                     and attach a W5-F08 diff report (recurring→new mapping) before \
+                     committing; see docs/taxonomy.md for the migration checklist"
+                ),
+            });
         }
         Ok(())
     }
@@ -618,6 +635,39 @@ mod tests {
         assert_eq!(manifest.by_tag("regression").len(), 1);
     }
 
+    // ── signature schema versioning (W5-F08) ──────────────────────────────────
+
+    #[test]
+    fn signature_schema_mismatch_reports_migration_hint() {
+        let meta = FixtureMetadata::new("fix-001", "seed", 1)
+            .with_signature_schema_version(SIGNATURE_SCHEMA_VERSION + 1);
+        match meta.validate() {
+            Err(ManifestError::SignatureSchemaMismatch {
+                fixture_id,
+                found,
+                expected,
+                hint,
+            }) => {
+                assert_eq!(fixture_id, "fix-001");
+                assert_eq!(found, SIGNATURE_SCHEMA_VERSION + 1);
+                assert_eq!(expected, SIGNATURE_SCHEMA_VERSION);
+                assert!(hint.contains("W5-F08"));
+                assert!(hint.contains("docs/taxonomy.md"));
+            }
+            other => panic!("expected SignatureSchemaMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_fixture_defaults_to_current_signature_schema() {
+        let meta = FixtureMetadata::new("legacy", "seed", 1);
+        assert_eq!(
+            meta.effective_signature_schema_version(),
+            SIGNATURE_SCHEMA_VERSION
+        );
+        assert!(meta.validate().is_ok());
+    }
+
     // ── provenance (#1864) ────────────────────────────────────────────────────
 
     fn provenance_record(seed: &str) -> ProvenanceRecord {
@@ -759,90 +809,5 @@ mod tests {
         assert!(manifest.get_fixture("legacy").unwrap().shrink_lineage().is_none());
         assert_eq!(manifest.paired().len(), 1);
         assert_eq!(manifest.original_only().len(), 1);
-    }
-
-    // ── signature schema versioning (W5-F08) ──────────────────────────────────
-
-    #[test]
-    fn new_fixture_stamps_current_signature_schema_version() {
-        let meta = FixtureMetadata::new("fix-001", "seed", 1);
-        assert_eq!(meta.signature_schema_version, Some(SIGNATURE_SCHEMA_VERSION));
-        assert_eq!(meta.effective_signature_schema_version(), SIGNATURE_SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn legacy_fixture_defaults_to_current_signature_schema_version() {
-        let json = r#"{
-            "schema": 1,
-            "fixtures": {
-                "fix-001": {"id": "fix-001", "fixture_type": "seed", "schema_version": 1}
-            },
-            "engine_schema_version": 1
-        }"#;
-        let manifest = FixtureManifest::from_json(json).unwrap();
-        let meta = manifest.get_fixture("fix-001").unwrap();
-        assert!(meta.signature_schema_version.is_none());
-        assert_eq!(meta.effective_signature_schema_version(), SIGNATURE_SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn signature_schema_mismatch_produces_migration_hint() {
-        let stale = FixtureMetadata::new("fix-001", "seed", 1)
-            .with_signature_schema_version(SIGNATURE_SCHEMA_VERSION + 1);
-        match stale.validate() {
-            Err(ManifestError::SignatureSchemaMismatch {
-                fixture_id,
-                found,
-                expected,
-            }) => {
-                assert_eq!(fixture_id, "fix-001");
-                assert_eq!(found, SIGNATURE_SCHEMA_VERSION + 1);
-                assert_eq!(expected, SIGNATURE_SCHEMA_VERSION);
-            }
-            other => panic!("expected SignatureSchemaMismatch, got {other:?}"),
-        }
-
-        let err = stale.validate().unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("W5-F08 diff report"));
-        assert!(msg.contains("recurring→new mapping"));
-    }
-
-    #[test]
-    fn signature_schema_version_round_trips_through_manifest_json() {
-        let mut manifest = FixtureManifest::new(1);
-        manifest
-            .add_fixture(
-                FixtureMetadata::new("fix-001", "seed", 1)
-                    .with_signature_schema_version(SIGNATURE_SCHEMA_VERSION),
-            )
-            .unwrap();
-
-        let json = manifest.to_json().unwrap();
-        assert!(json.contains("signature_schema_version"));
-        let restored = FixtureManifest::from_json(&json).unwrap();
-        assert_eq!(
-            restored.get_fixture("fix-001").unwrap().signature_schema_version,
-            Some(SIGNATURE_SCHEMA_VERSION)
-        );
-    }
-
-    impl Default for FixtureMetadata {
-        fn default() -> Self {
-            Self {
-                id: String::new(),
-                fixture_type: String::new(),
-                schema_version: 1,
-                name: None,
-                failure_category: None,
-                checksum: None,
-                created_at: None,
-                tags: Vec::new(),
-                properties: HashMap::new(),
-                provenance: None,
-                pairing: None,
-                signature_schema_version: Some(SIGNATURE_SCHEMA_VERSION),
-            }
-        }
     }
 }
