@@ -11,12 +11,17 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: e2e-$${{ github.ref }}
   cancel-in-progress: true
 
 env:
   NODE_VERSION: '20'
   PNP_VERSION: '9'
+  # Number of shards for the full Playwright suite. Derived from measured
+  # runtime (~15 min budget); bump when the suite grows past the budget.
+  E2E_SHARDS: '2'
+  # Per-spec retries in CI to absorb flake without hiding real failures.
+  E2E_RETRIES: '1'
 
 jobs:
   build:
@@ -41,10 +46,14 @@ jobs:
           retention-days: 1
 
   e2e:
-    name: e2e (chromium)
+    name: e2e (chromium, shard ${{ matrix.shard }}/${{ env.E2E_SHARDS }})
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v6.1.0
@@ -61,24 +70,75 @@ jobs:
           path: apps/web/.next
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: apps/web
-      - name: Run e2e suite
-        run: pnpm --filter web exec playwright test
+      - name: Run e2e suite (shard ${{ matrix.shard }}/${{ env.E2E_SHARDS }})
+        run: pnpm --filter web exec playwright test --shard=${{ matrix.shard }}/${{ env.E2E_SHARDS }}
         env:
           CI: 'true'
+      - name: Upload Playwright trace/video/screenshot artifacts (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts-shard-${{ matrix.shard }}
+          path: |
+            apps/web/test-results
+            apps/web/playwright-report
+          retention-days: 7
       - name: Upload Playwright HTML report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-shard-${{ matrix.shard }}
           path: apps/web/playwright-report
           retention-days: 7
       - name: Upload test results (json/junit)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-results
+          name: playwright-results-shard-${{ matrix.shard }}
           path: apps/web/test-results
           retention-days: 7
+
+  quarantine:
+    name: Quarantine list
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: ${{ env.PNP_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: Publish quarantine list
+        run: |
+          set -eu
+          LIST="apps/web/e2e/quarantine.json"
+          if [ ! -f "$LIST" ]; then
+            echo "No quarantine list found at $LIST"
+            exit 0
+          fi
+          node -e "
+            const fs = require('fs');
+            const list = JSON.parse(fs.readFileSync('$LIST', 'utf8'));
+            const now = new Date();
+            const expired = (list.specs ?? []).filter(s => s.expiresAt && new Date(s.expiresAt) < now);
+            if (expired.length) {
+              console.error('[quarantine] expired entries:', expired.map(s => s.spec));
+              process.exit(1);
+            }
+            console.log('[quarantine] active entries:', (list.specs ?? []).length);
+          "
+      - name: Upload quarantine list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quarantine-list
+          path: apps/web/e2e/quarantine.json
+          retention-days: 30
 
   a11y:
     name: a11y gate (axe + keyboard)

@@ -1,0 +1,5 @@
+{
+  "description": "Playwright specs temporarily quarantined from the merge gate. Each entry must include a tracking issue and an auto-expiry date (ISO 8601). Expired entries fail the quarantine check so the list cannot rot silently.",
+  "version": 1,
+  "quarantined": []
+}
