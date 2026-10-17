@@ -19,8 +19,6 @@ __pycache__/
 .mypy_cache/
 
 # Env and logs
-.env
-.env.*
 !.env.docker.example
 *.log
 
@@ -37,3 +35,4 @@ skills-lock.json
 IMPLEMENTATION_SUMMARY*.md
 tmp_*
 *_output.txt
+config.bat
