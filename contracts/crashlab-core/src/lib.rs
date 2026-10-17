@@ -217,7 +217,8 @@ pub use checkpoint::{
 
 pub mod corpus;
 pub use corpus::{
-    corpus_archive_from_seeds, export_corpus_json, import_corpus_json, CorpusArchive, CorpusError,
+    corpus_archive_from_seeds, export_corpus_json, import_corpus_json, verify_corpus_integrity,
+    CorpusArchive, CorpusError, CorpusVerifyStatus, AddressedSeed,
     CORPUS_ARCHIVE_SCHEMA_VERSION,
 };
 
