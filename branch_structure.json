@@ -1,0 +1,27 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feat/issue-1820-full-playwright-suite-as-a-merge-gate-with",
+    "feat/issue-1846-durable-scheduled-campaigns-misfire-overlap-and",
+    "fix/issue-1836-sse-stream-resilience-heartbeats-last-event-id",
+    "fix/issue-1865-signature-schema-versioning-without-silent-re",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "feat/issue-1820-full-playwright-suite-as-a-merge-gate-with": "main",
+    "feat/issue-1846-durable-scheduled-campaigns-misfire-overlap-and": "main",
+    "fix/issue-1836-sse-stream-resilience-heartbeats-last-event-id": "main",
+    "fix/issue-1865-signature-schema-versioning-without-silent-re": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "feat/issue-1820-full-playwright-suite-as-a-merge-gate-with",
+    "feat/issue-1846-durable-scheduled-campaigns-misfire-overlap-and",
+    "fix/issue-1836-sse-stream-resilience-heartbeats-last-event-id",
+    "fix/issue-1865-signature-schema-versioning-without-silent-re",
+    "origin"
+  ]
+}
